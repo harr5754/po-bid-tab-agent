@@ -1,467 +1,339 @@
 """
-PO Bid Tab Agent — Streamlit App
-================================
-Upload RFQ + technical docs + bidder proposals → structured Bid Tab (online + Excel).
-Claude is the default extraction engine. Demo mode works with zero API cost.
+Excel export that closely matches the professional Bid Tab layout
+used by Crosstrails (22510-M001-Bid-Tab-Rev 1 style).
 """
 
-import streamlit as st
-import pandas as pd
-from datetime import datetime
 from io import BytesIO
-import sys
-from pathlib import Path
+from datetime import datetime
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill, numbers
+from openpyxl.utils import get_column_letter
 
-# Allow imports from parent
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.models import BidTab, calculate_apples_to_apples
 
-from app.models import BidTab, VendorQuote, ComplianceStatus, calculate_apples_to_apples
-from data.m001_demo import demo_bid_tab
 
 # ---------------------------------------------------------------------------
-# Page config
+# Styles
 # ---------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Aegentik Bid Tab Agent",
-    page_icon="📋",
-    layout="wide",
-    initial_sidebar_state="expanded"
+thin = Border(
+    left=Side(style='thin', color='B0B0B0'),
+    right=Side(style='thin', color='B0B0B0'),
+    top=Side(style='thin', color='B0B0B0'),
+    bottom=Side(style='thin', color='B0B0B0')
 )
 
-# ---------------------------------------------------------------------------
-# Session state
-# ---------------------------------------------------------------------------
-if "bid_tab" not in st.session_state:
-    st.session_state.bid_tab = demo_bid_tab
-if "mode" not in st.session_state:
-    st.session_state.mode = "Demo (M001)"
-if "view_style" not in st.session_state:
-    st.session_state.view_style = "Classic"
-if "review_mode" not in st.session_state:
-    st.session_state.review_mode = False
-if "show_welcome" not in st.session_state:
-    st.session_state.show_welcome = True
+header_fill = PatternFill("solid", fgColor="1F4E79")
+header_font = Font(name='Calibri', bold=True, color='FFFFFF', size=11)
+section_fill = PatternFill("solid", fgColor="D6DCE4")
+section_font = Font(name='Calibri', bold=True, size=11, color='1F4E79')
+label_font = Font(name='Calibri', bold=True, size=10)
+normal_font = Font(name='Calibri', size=10)
+title_font = Font(name='Calibri', bold=True, size=14, color='1F4E79')
+currency_format = '"$"#,##0'
+total_fill = PatternFill("solid", fgColor="E2EFDA")
+total_font = Font(name='Calibri', bold=True, size=10)
+dev_fill = PatternFill("solid", fgColor="FCE4D6")  # light orange for deviations
+ok_fill = PatternFill("solid", fgColor="C6EFCE")   # light green
 
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    st.markdown("### Aegentik")
-    st.title("Bid Tab Agent")
-    st.caption("Built for real EPC RFQs")
 
-    st.divider()
-    st.subheader("Mode")
-    mode = st.radio(
-        "Select mode",
-        ["Demo (M001 — zero cost)", "Live RFQ (Claude extraction)"],
-        index=0,
-        label_visibility="collapsed"
-    )
-    st.session_state.mode = mode
+def _set_col_widths(ws, widths: dict):
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
 
-    st.divider()
-    st.subheader("View Style")
-    view = st.radio(
-        "Bid Tab style",
-        ["Classic (2-sheet style)", "Modern (multi-tab)"],
-        index=0,
-        label_visibility="collapsed"
-    )
-    st.session_state.view_style = "Classic" if "Classic" in view else "Modern"
 
-    st.divider()
-    st.subheader("Claude API (optional)")
-    api_key = st.text_input(
-        "Anthropic API Key",
-        type="password",
-        help="Company Claude key. Leave blank for Demo mode.",
-        placeholder="sk-ant-..."
-    )
-    if api_key:
-        st.success("Key loaded (not stored)")
-    else:
-        st.info("Demo mode active — no key needed")
+def _write_header_block(ws, bt: BidTab):
+    """Write the project header that matches the original Bid Tab."""
+    rfq = bt.rfq
 
-    st.divider()
-    if st.button("Show Welcome Screen"):
-        st.session_state.show_welcome = True
-    st.caption("Max 5 bidders · Manual review available")
-    st.caption("aegentik.ai")
+    # Title row
+    ws.merge_cells('A1:H1')
+    ws['A1'] = f"{rfq.project_number} KEYSTONE C2 PURIFICATION — {rfq.equipment_tag} TOWER ({rfq.equipment_description.upper()}) — BID TAB"
+    ws['A1'].font = title_font
+    ws['A1'].alignment = Alignment(horizontal='left', vertical='center')
+    ws.row_dimensions[1].height = 22
 
-# ---------------------------------------------------------------------------
-# Welcome / Landing Screen
-# ---------------------------------------------------------------------------
-if st.session_state.show_welcome:
-    st.markdown("## Aegentik Bid Tab Agent")
-    st.markdown("#### Turn RFQ packages + bidder proposals into a structured Bid Tab in minutes")
-    st.write("")
-
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.success("**Demo ready** — Pre-loaded with real M001 data (Absolute + BWFS)\n\nNo API key required for this demo.")
-
-        st.markdown("#### What you can do")
-        st.markdown("""
-        - View the online Bid Tab (Commercial + Technical)
-        - Review & correct any extracted values
-        - Download Excel in **Classic** or **Modern** format
-        - Upload a new RFQ package when ready (Claude extraction)
-        """)
-
-        st.write("")
-        if st.button("Enter Demo →", type="primary", use_container_width=True):
-            st.session_state.show_welcome = False
-            st.rerun()
-
-        st.write("")
-        st.caption("Powered by Aegentik · For Crosstrails Engineering demo")
-    st.stop()
-
-# ---------------------------------------------------------------------------
-# Header (after welcome)
-# ---------------------------------------------------------------------------
-st.title("Aegentik Bid Tab Agent")
-rfq = st.session_state.bid_tab.rfq
-st.markdown(f"**{rfq.project_name}** · {rfq.rfq_number} · {rfq.equipment_tag}")
-
-# ---------------------------------------------------------------------------
-# Tabs
-# ---------------------------------------------------------------------------
-tab_demo, tab_upload, tab_review, tab_bidtab, tab_download = st.tabs([
-    "📊 Current Bid Tab",
-    "📤 Upload New RFQ",
-    "✏️ Review & Correct",
-    "🔍 Detailed Comparison",
-    "⬇️ Download Excel"
-])
-
-# ===========================================================================
-# TAB 1: Current Bid Tab (always shows current state)
-# ===========================================================================
-with tab_demo:
-    bt = st.session_state.bid_tab
-
-    st.subheader("Commercial Summary")
-    st.markdown(f"**Project:** {bt.rfq.project_name}  \n"
-                f"**Location:** {bt.rfq.location}  \n"
-                f"**Owner:** {bt.rfq.owner}  \n"
-                f"**Engineer / Buyer:** {bt.rfq.engineer_buyer}  \n"
-                f"**Data Sheet:** {bt.rfq.data_sheet_ref}  \n"
-                f"**Bid Tab:** {bt.rfq.bid_tab_rev} · {bt.rfq.bid_tab_date}")
-
-    # Vendor header row
-    cols = st.columns(len(bt.vendors) + 1)
-    cols[0].markdown("**Field**")
-    for i, v in enumerate(bt.vendors):
-        cols[i+1].markdown(f"**{v.vendor.name}**")
-
-    # Key commercial rows
-    rows = [
-        ("Proposal / Quote #", [v.vendor.proposal_number for v in bt.vendors]),
-        ("Proposal Date", [v.vendor.proposal_date or "—" for v in bt.vendors]),
-        ("Sales Contact", [v.vendor.sales_contact or "—" for v in bt.vendors]),
-        ("Shop / FOB", [f"{v.vendor.shop_location or ''} ({v.vendor.fob or ''})" for v in bt.vendors]),
-        ("ASME / NB Stamp", [v.vendor.asme_stamp or "—" for v in bt.vendors]),
+    # Project info block
+    info = [
+        ("Project:", rfq.project_name),
+        ("Location:", rfq.location),
+        ("Owner:", rfq.owner),
+        ("Engineer / Buyer:", rfq.engineer_buyer),
+        ("RFQ Package:", f"{rfq.rfq_number} — Tower ({rfq.equipment_tag} Demethanizer Column)"),
+        ("Data Sheet:", rfq.data_sheet_ref),
+        ("Bid Tab Rev:", rfq.bid_tab_rev),
+        ("Bid Tab Date:", rfq.bid_tab_date or datetime.now().strftime("%d %B %Y")),
+        ("Revisions:", rfq.notes or ""),
     ]
-    for label, values in rows:
-        cols = st.columns(len(bt.vendors) + 1)
-        cols[0].write(label)
-        for i, val in enumerate(values):
-            cols[i+1].write(val)
 
-    st.divider()
-    st.subheader("Pricing Summary (USD)")
+    for i, (label, value) in enumerate(info, start=2):
+        ws[f'A{i}'] = label
+        ws[f'A{i}'].font = label_font
+        ws.merge_cells(f'B{i}:H{i}')
+        ws[f'B{i}'] = value
+        ws[f'B{i}'].font = normal_font
 
-    # Build pricing comparison table
-    price_data = []
-    for v in bt.vendors:
-        base = next((p.amount_usd for p in v.pricing_lines if "Base Vessel" in p.item or "base vessel" in p.description.lower()), 0)
-        down = next((p.amount_usd for p in v.pricing_lines if "Downcomer" in p.item), 0)
-        ladd = next((p.amount_usd for p in v.pricing_lines if "Ladder" in p.item or "Platform" in p.item), 0)
-        fall = next((p.amount_usd for p in v.pricing_lines if "Fall Arrest" in p.item), 0)
+
+def build_classic_excel(bt: BidTab) -> bytes:
+    """
+    Build a Classic 2-sheet Bid Tab that closely follows the layout
+    of 22510-M001-Bid-Tab-Rev 1.xlsx
+    """
+    wb = Workbook()
+
+    # =====================================================================
+    # SHEET 1: Commercial Summary
+    # =====================================================================
+    ws = wb.active
+    ws.title = "Commercial Summary"
+
+    _write_header_block(ws, bt)
+
+    # ---- Vendor Info section ----
+    start_row = 12
+    ws[f'A{start_row}'] = "Vendor Info"
+    ws[f'A{start_row}'].font = section_font
+    ws[f'A{start_row}'].fill = section_fill
+    ws.merge_cells(f'A{start_row}:H{start_row}')
+
+    # Column headers for vendors
+    header_row = start_row + 1
+    ws[f'B{header_row}'] = "Field"
+    ws[f'B{header_row}'].font = header_font
+    ws[f'B{header_row}'].fill = header_fill
+
+    vendors = bt.vendors
+    # Place vendors starting at column D, F, H style (or simply sequential)
+    vendor_cols = ['D', 'F', 'H']  # supports up to 3 cleanly; extend if needed
+    for i, v in enumerate(vendors):
+        col = vendor_cols[i] if i < len(vendor_cols) else get_column_letter(4 + i * 2)
+        cell = ws[f'{col}{header_row}']
+        cell.value = f"{v.vendor.name} ({v.vendor.revision or ''})".strip()
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(wrap_text=True, horizontal='center')
+
+    ws[f'H{header_row}'] = "Notes"
+    ws[f'H{header_row}'].font = header_font
+    ws[f'H{header_row}'].fill = header_fill
+
+    # Vendor info rows
+    info_fields = [
+        ("Proposal / Quote #", lambda v: v.vendor.proposal_number),
+        ("Proposal Date", lambda v: v.vendor.proposal_date or "—"),
+        ("Sales Contact", lambda v: v.vendor.sales_contact or "—"),
+        ("Phone / Email", lambda v: f"{v.vendor.phone or ''} / {v.vendor.email or ''}".strip(" /")),
+        ("Shop Location / FOB", lambda v: f"{v.vendor.shop_location or ''} ({v.vendor.fob or ''})".strip()),
+        ("ASME / NB Stamp", lambda v: v.vendor.asme_stamp or "—"),
+    ]
+
+    for offset, (label, getter) in enumerate(info_fields):
+        r = header_row + 1 + offset
+        ws[f'B{r}'] = label
+        ws[f'B{r}'].font = label_font
+        for i, v in enumerate(vendors):
+            col = vendor_cols[i] if i < len(vendor_cols) else get_column_letter(4 + i * 2)
+            ws[f'{col}{r}'] = getter(v)
+            ws[f'{col}{r}'].font = normal_font
+            ws[f'{col}{r}'].alignment = Alignment(wrap_text=True)
+
+    # ---- Pricing Summary ----
+    price_start = header_row + len(info_fields) + 2
+    ws[f'A{price_start}'] = "PRICING SUMMARY (USD)"
+    ws[f'A{price_start}'].font = section_font
+    ws[f'A{price_start}'].fill = section_fill
+    ws.merge_cells(f'A{price_start}:H{price_start}')
+
+    # Pricing header
+    ph = price_start + 1
+    headers = ["Item", "Description", "Absolute (USD)", "BWFS (USD)", "GLEX (USD)", "Notes"]
+    # Dynamic based on actual vendors
+    price_headers = ["Item", "Description"]
+    for v in vendors:
+        price_headers.append(f"{v.vendor.name.split()[0]} (USD)")
+    price_headers.append("Notes")
+
+    for col_idx, h in enumerate(price_headers, start=1):
+        cell = ws.cell(row=ph, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
+
+    # Collect common pricing items
+    # We use a simple ordered list of known items
+    item_order = ["Base Vessel", "Downcomer Piping", "Ladders & Platforms", "Fall Arrest Devices", "Field Hydrotest"]
+
+    price_row = ph + 1
+    for item_name in item_order:
+        ws.cell(row=price_row, column=1, value=item_name).font = label_font
+
+        # Description from first vendor that has it
+        desc = ""
+        for v in vendors:
+            for p in v.pricing_lines:
+                if item_name.lower() in p.item.lower() or item_name.lower() in p.description.lower():
+                    desc = p.description
+                    break
+            if desc:
+                break
+        ws.cell(row=price_row, column=2, value=desc).font = normal_font
+        ws.cell(row=price_row, column=2).alignment = Alignment(wrap_text=True)
+
+        for i, v in enumerate(vendors):
+            amount = 0.0
+            is_opt = False
+            for p in v.pricing_lines:
+                if item_name.lower() in p.item.lower() or (item_name == "Ladders & Platforms" and "ladder" in p.item.lower()):
+                    amount = p.amount_usd
+                    is_opt = p.is_optional
+                    break
+            cell = ws.cell(row=price_row, column=3 + i, value=amount if amount else None)
+            cell.number_format = currency_format
+            cell.font = normal_font
+            if is_opt:
+                cell.font = Font(name='Calibri', size=10, italic=True, color='808080')
+
+        price_row += 1
+
+    # Apples-to-apples total row
+    total_row = price_row
+    ws.cell(row=total_row, column=1, value="TOTAL — Apples-to-Apples").font = total_font
+    ws.cell(row=total_row, column=2, value=bt.apples_to_apples_notes or "Vessel + downcomers + base ladders").font = normal_font
+    for i, v in enumerate(vendors):
         total = calculate_apples_to_apples(v)
-        price_data.append({
-            "Vendor": v.vendor.name,
-            "Base Vessel": f"${base:,.0f}",
-            "Downcomers": f"${down:,.0f}",
-            "Ladders/Platforms": f"${ladd:,.0f}",
-            "Fall Arrest": f"${fall:,.0f}" if fall else "—",
-            "Apples-to-Apples Total": f"**${total:,.0f}**"
-        })
+        cell = ws.cell(row=total_row, column=3 + i, value=total)
+        cell.number_format = currency_format
+        cell.font = total_font
+        cell.fill = total_fill
 
-    st.dataframe(pd.DataFrame(price_data), use_container_width=True, hide_index=True)
-    st.caption(bt.apples_to_apples_notes or "")
+    # ---- Commercial Terms ----
+    terms_start = total_row + 2
+    ws[f'A{terms_start}'] = "COMMERCIAL TERMS — VENDOR COMPARISON"
+    ws[f'A{terms_start}'].font = section_font
+    ws[f'A{terms_start}'].fill = section_fill
+    ws.merge_cells(f'A{terms_start}:H{terms_start}')
 
-    st.divider()
-    st.subheader("Commercial Terms Comparison")
+    th = terms_start + 1
+    term_headers = ["Term", "Description"] + [v.vendor.name.split()[0] for v in vendors] + ["Notes / Risk"]
+    for col_idx, h in enumerate(term_headers, start=1):
+        cell = ws.cell(row=th, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
 
-    term_rows = [
-        ("Delivery", [v.commercial.delivery_weeks or "—" for v in bt.vendors]),
-        ("Pricing Validity", [v.commercial.pricing_validity or "—" for v in bt.vendors]),
-        ("Payment Terms", [v.commercial.payment_terms or "—" for v in bt.vendors]),
-        ("Warranty", [v.commercial.warranty or "—" for v in bt.vendors]),
-        ("Cancellation", [v.commercial.cancellation_schedule or "—" for v in bt.vendors]),
-        ("Tariff / Govt Action", [v.commercial.tariff_disclaimer or "—" for v in bt.vendors]),
-        ("Storage", [v.commercial.storage or "—" for v in bt.vendors]),
+    term_fields = [
+        ("Delivery", "Equipment delivery (weeks)", lambda v: v.commercial.delivery_weeks),
+        ("Pricing Validity", "Quote validity period", lambda v: v.commercial.pricing_validity),
+        ("Payment Terms", "Progress payment milestones", lambda v: v.commercial.payment_terms),
+        ("Warranty", "Mechanical warranty", lambda v: v.commercial.warranty),
+        ("Cancellation", "Cancellation schedule", lambda v: v.commercial.cancellation_schedule),
+        ("Taxes", "Sales / use / interstate tax", lambda v: v.commercial.taxes),
+        ("Tariff / Govt Action", "Tariff & regulatory disclaimer", lambda v: v.commercial.tariff_disclaimer),
+        ("Storage", "Equipment storage post-completion", lambda v: v.commercial.storage),
     ]
-    for label, values in term_rows:
-        cols = st.columns(len(bt.vendors) + 1)
-        cols[0].markdown(f"**{label}**")
-        for i, val in enumerate(values):
-            cols[i+1].write(val)
 
-# ===========================================================================
-# TAB 2: Upload New RFQ
-# ===========================================================================
-with tab_upload:
-    st.subheader("Upload New RFQ Package")
-    st.info("Demo mode is active. Upload is enabled for structure testing. Full Claude extraction requires an API key.")
+    for offset, (term, desc, getter) in enumerate(term_fields):
+        r = th + 1 + offset
+        ws.cell(row=r, column=1, value=term).font = label_font
+        ws.cell(row=r, column=2, value=desc).font = normal_font
+        for i, v in enumerate(vendors):
+            val = getter(v) or "—"
+            cell = ws.cell(row=r, column=3 + i, value=val)
+            cell.font = normal_font
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**RFQ / Technical Package**")
-        rfq_files = st.file_uploader(
-            "RFQ letter, Data Sheet, Design Basis, ITP, VDRL, Owner T&Cs",
-            type=["pdf", "docx", "xlsx", "doc"],
-            accept_multiple_files=True,
-            key="rfq_upload"
-        )
-    with col2:
-        st.markdown("**Bidder Proposals (max 5)**")
-        bid_files = st.file_uploader(
-            "Vendor quotes / proposals",
-            type=["pdf", "docx", "xlsx", "doc"],
-            accept_multiple_files=True,
-            key="bid_upload"
-        )
+    # Column widths for Commercial sheet
+    _set_col_widths(ws, {
+        'A': 22, 'B': 42, 'C': 18, 'D': 22, 'E': 18, 'F': 22, 'G': 18, 'H': 28
+    })
 
-    if st.button("Run Extraction (Claude)", type="primary", disabled=not api_key):
-        st.warning("Claude extraction pipeline will be fully wired in the next iteration. For now the Demo data is loaded.")
-        st.session_state.bid_tab = demo_bid_tab
+    # =====================================================================
+    # SHEET 2: Technical Comparison
+    # =====================================================================
+    ws2 = wb.create_sheet("Technical Comparison")
 
-    if rfq_files or bid_files:
-        st.success(f"Received {len(rfq_files or [])} RFQ files and {len(bid_files or [])} bidder files.")
-        st.caption("Files are ready. Extraction will use the company Claude key when provided.")
+    # Title
+    ws2.merge_cells('A1:G1')
+    ws2['A1'] = f"{bt.rfq.equipment_tag} DEMETHANIZER COLUMN — TECHNICAL COMPARISON vs DATA SHEET {bt.rfq.data_sheet_ref.split('(')[0].strip()}"
+    ws2['A1'].font = title_font
+    ws2.row_dimensions[1].height = 22
 
-# ===========================================================================
-# TAB 3: Review & Correct
-# ===========================================================================
-with tab_review:
-    st.subheader("Manual Review & Override")
-    st.markdown("Correct any extraction errors before generating the final Bid Tab. Changes are kept in session.")
+    ws2.merge_cells('A2:G2')
+    ws2['A2'] = f"{bt.rfq.bid_tab_rev}: Compliance legend: OK = matches DS; Dev = deviates; Clarify = not addressed / requires vendor clarification."
+    ws2['A2'].font = Font(name='Calibri', size=9, italic=True)
 
-    bt = st.session_state.bid_tab
-    for idx, vendor in enumerate(bt.vendors):
-        with st.expander(f"{vendor.vendor.name}  ·  Confidence {vendor.extraction_confidence or 0:.0%}", expanded=False):
-            st.markdown("**Vendor Info**")
-            c1, c2 = st.columns(2)
-            with c1:
-                vendor.vendor.proposal_number = st.text_input("Proposal #", vendor.vendor.proposal_number, key=f"pn_{idx}")
-                vendor.vendor.proposal_date = st.text_input("Date", vendor.vendor.proposal_date or "", key=f"pd_{idx}")
-                vendor.vendor.sales_contact = st.text_input("Contact", vendor.vendor.sales_contact or "", key=f"sc_{idx}")
-            with c2:
-                vendor.vendor.phone = st.text_input("Phone", vendor.vendor.phone or "", key=f"ph_{idx}")
-                vendor.vendor.email = st.text_input("Email", vendor.vendor.email or "", key=f"em_{idx}")
-                vendor.vendor.fob = st.text_input("FOB", vendor.vendor.fob or "", key=f"fob_{idx}")
+    # Headers
+    tech_headers = ["Parameter", "Units", "Data Sheet — Required"] + [v.vendor.name.split()[0] for v in vendors] + ["Compliance"]
+    for col_idx, h in enumerate(tech_headers, start=1):
+        cell = ws2.cell(row=4, column=col_idx, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal='center', wrap_text=True)
 
-            st.markdown("**Commercial Terms**")
-            vendor.commercial.delivery_weeks = st.text_input("Delivery", vendor.commercial.delivery_weeks or "", key=f"del_{idx}")
-            vendor.commercial.pricing_validity = st.text_input("Validity", vendor.commercial.pricing_validity or "", key=f"val_{idx}")
-            vendor.commercial.payment_terms = st.text_area("Payment Terms", vendor.commercial.payment_terms or "", key=f"pay_{idx}", height=70)
-            vendor.commercial.warranty = st.text_input("Warranty", vendor.commercial.warranty or "", key=f"war_{idx}")
+    # Group by category
+    current_category = None
+    row = 5
 
-            st.markdown("**Pricing Lines**")
-            for p_idx, line in enumerate(vendor.pricing_lines):
-                cols = st.columns([3, 2, 1])
-                line.description = cols[0].text_input("Desc", line.description, key=f"desc_{idx}_{p_idx}")
-                line.amount_usd = cols[1].number_input("Amount", value=float(line.amount_usd), key=f"amt_{idx}_{p_idx}", step=1000.0)
-                line.is_optional = cols[2].checkbox("Optional", value=line.is_optional, key=f"opt_{idx}_{p_idx}")
-
-            vendor.needs_review = st.checkbox("Flag for further review", value=vendor.needs_review, key=f"flag_{idx}")
-            vendor.review_notes = st.text_area("Review notes", vendor.review_notes or "", key=f"notes_{idx}")
-
-    if st.button("Save Corrections", type="primary"):
-        st.success("Corrections saved in session. Go to Download or Detailed Comparison to see updates.")
-
-# ===========================================================================
-# TAB 4: Detailed Comparison (Modern view)
-# ===========================================================================
-with tab_bidtab:
-    st.subheader("Technical Compliance Comparison")
-    bt = st.session_state.bid_tab
-
-    # Collect all unique parameters
-    all_params = []
+    # Collect ordered unique parameters preserving category order
+    seen = set()
+    ordered_params = []
     for v in bt.vendors:
         for t in v.technical:
             key = (t.category, t.parameter)
-            if key not in [(p.category, p.parameter) for p in all_params]:
-                all_params.append(t)
+            if key not in seen:
+                seen.add(key)
+                ordered_params.append(t)
 
-    if not all_params:
-        st.info("No technical parameters loaded yet.")
-    else:
-        # Build comparison table
-        rows = []
-        for param in all_params:
-            row = {
-                "Category": param.category,
-                "Parameter": param.parameter,
-                "Data Sheet Required": param.data_sheet_required,
-            }
-            for v in bt.vendors:
-                match = next((t for t in v.technical if t.parameter == param.parameter and t.category == param.category), None)
-                if match:
-                    status = match.compliance.value
-                    color = {"OK": "🟢", "Dev": "🟠", "Clarify": "🟡", "Not Addressed": "⚪"}.get(status, "")
-                    row[v.vendor.name] = f"{color} {match.vendor_offer}"
-                else:
-                    row[v.vendor.name] = "—"
-            rows.append(row)
+    for param in ordered_params:
+        # Category header
+        if param.category != current_category:
+            current_category = param.category
+            ws2.cell(row=row, column=1, value=current_category).font = section_font
+            ws2.cell(row=row, column=1).fill = section_fill
+            for c in range(2, len(tech_headers) + 1):
+                ws2.cell(row=row, column=c).fill = section_fill
+            row += 1
 
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        ws2.cell(row=row, column=1, value=param.parameter).font = label_font
+        ws2.cell(row=row, column=2, value=param.units or "—").font = normal_font
+        ws2.cell(row=row, column=3, value=param.data_sheet_required).font = normal_font
+        ws2.cell(row=row, column=3).alignment = Alignment(wrap_text=True)
 
-        st.caption("🟢 OK  ·  🟠 Deviation  ·  🟡 Clarify  ·  ⚪ Not Addressed")
+        compliances = []
+        for i, v in enumerate(vendors):
+            match = next((t for t in v.technical if t.parameter == param.parameter and t.category == param.category), None)
+            if match:
+                cell = ws2.cell(row=row, column=4 + i, value=match.vendor_offer)
+                cell.font = normal_font
+                cell.alignment = Alignment(wrap_text=True)
+                compliances.append(match.compliance.value)
+                if match.compliance.value == "Dev":
+                    cell.fill = dev_fill
+            else:
+                ws2.cell(row=row, column=4 + i, value="—").font = normal_font
 
-# ===========================================================================
-# TAB 5: Download
-# ===========================================================================
-with tab_download:
-    st.subheader("Download Bid Tab")
-    bt = st.session_state.bid_tab
+        # Overall compliance (simplified)
+        overall = "OK"
+        if "Dev" in compliances:
+            overall = "Dev"
+        elif "Clarify" in compliances:
+            overall = "Clarify"
+        cell = ws2.cell(row=row, column=4 + len(vendors), value=overall)
+        cell.font = label_font
+        if overall == "OK":
+            cell.fill = ok_fill
+        elif overall == "Dev":
+            cell.fill = dev_fill
 
-    col1, col2 = st.columns(2)
+        row += 1
 
-    with col1:
-        st.markdown("### Classic Format")
-        st.caption("Matches your existing 2-sheet Bid Tab style (Commercial + Technical)")
-        if st.button("Generate Classic Excel", key="classic"):
-            # Simple Excel generation
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                # Commercial sheet
-                comm_data = {
-                    "Field": ["Project", "Location", "Owner", "RFQ", "Equipment", "Data Sheet", "Bid Tab Rev"],
-                    "Value": [bt.rfq.project_name, bt.rfq.location, bt.rfq.owner, bt.rfq.rfq_number,
-                              f"{bt.rfq.equipment_tag} — {bt.rfq.equipment_description}",
-                              bt.rfq.data_sheet_ref, bt.rfq.bid_tab_rev]
-                }
-                pd.DataFrame(comm_data).to_excel(writer, sheet_name="Commercial Summary", index=False)
+    _set_col_widths(ws2, {
+        'A': 28, 'B': 12, 'C': 45, 'D': 35, 'E': 35, 'F': 20, 'G': 12
+    })
 
-                # Pricing comparison
-                price_rows = []
-                for v in bt.vendors:
-                    total = calculate_apples_to_apples(v)
-                    price_rows.append({
-                        "Vendor": v.vendor.name,
-                        "Proposal": v.vendor.proposal_number,
-                        "Base Vessel": next((p.amount_usd for p in v.pricing_lines if "Base" in p.item), 0),
-                        "Downcomers": next((p.amount_usd for p in v.pricing_lines if "Downcomer" in p.item), 0),
-                        "Ladders": next((p.amount_usd for p in v.pricing_lines if "Ladder" in p.item), 0),
-                        "Apples-to-Apples": total,
-                        "Delivery": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Payment": v.commercial.payment_terms,
-                        "Warranty": v.commercial.warranty,
-                    })
-                pd.DataFrame(price_rows).to_excel(writer, sheet_name="Pricing & Terms", index=False)
+    # Freeze panes
+    ws.freeze_panes = 'A12'
+    ws2.freeze_panes = 'A5'
 
-                # Technical
-                tech_rows = []
-                for v in bt.vendors:
-                    for t in v.technical:
-                        tech_rows.append({
-                            "Vendor": v.vendor.name,
-                            "Category": t.category,
-                            "Parameter": t.parameter,
-                            "Data Sheet": t.data_sheet_required,
-                            "Vendor Offer": t.vendor_offer,
-                            "Compliance": t.compliance.value,
-                            "Notes": t.notes or ""
-                        })
-                if tech_rows:
-                    pd.DataFrame(tech_rows).to_excel(writer, sheet_name="Technical Comparison", index=False)
-
-            st.download_button(
-                label="⬇️ Download Classic Excel",
-                data=output.getvalue(),
-                file_name=f"BidTab_{bt.rfq.rfq_number}_Classic_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-    with col2:
-        st.markdown("### Modern Format")
-        st.caption("Multi-sheet with Summary, Pricing Detail, Terms, Technical, Risk Flags")
-        if st.button("Generate Modern Excel", key="modern"):
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                # Summary
-                summary = []
-                for v in bt.vendors:
-                    summary.append({
-                        "Vendor": v.vendor.name,
-                        "Proposal": v.vendor.proposal_number,
-                        "Apples-to-Apples Total": calculate_apples_to_apples(v),
-                        "Delivery (weeks)": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Needs Review": v.needs_review
-                    })
-                pd.DataFrame(summary).to_excel(writer, sheet_name="Summary", index=False)
-
-                # Full pricing
-                all_prices = []
-                for v in bt.vendors:
-                    for p in v.pricing_lines:
-                        all_prices.append({
-                            "Vendor": v.vendor.name,
-                            "Item": p.item,
-                            "Description": p.description,
-                            "Amount USD": p.amount_usd,
-                            "Optional": p.is_optional,
-                            "Notes": p.notes or ""
-                        })
-                pd.DataFrame(all_prices).to_excel(writer, sheet_name="Pricing Detail", index=False)
-
-                # Terms
-                terms = []
-                for v in bt.vendors:
-                    terms.append({
-                        "Vendor": v.vendor.name,
-                        "Delivery": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Payment Terms": v.commercial.payment_terms,
-                        "Warranty": v.commercial.warranty,
-                        "Cancellation": v.commercial.cancellation_schedule,
-                        "Tariff Disclaimer": v.commercial.tariff_disclaimer,
-                        "Storage": v.commercial.storage,
-                        "Notes": v.commercial.notes or ""
-                    })
-                pd.DataFrame(terms).to_excel(writer, sheet_name="Commercial Terms", index=False)
-
-                # Technical
-                tech_rows = []
-                for v in bt.vendors:
-                    for t in v.technical:
-                        tech_rows.append({
-                            "Vendor": v.vendor.name,
-                            "Category": t.category,
-                            "Parameter": t.parameter,
-                            "Data Sheet Required": t.data_sheet_required,
-                            "Vendor Offer": t.vendor_offer,
-                            "Compliance": t.compliance.value,
-                            "Notes": t.notes or ""
-                        })
-                if tech_rows:
-                    pd.DataFrame(tech_rows).to_excel(writer, sheet_name="Technical Compliance", index=False)
-
-            st.download_button(
-                label="⬇️ Download Modern Excel",
-                data=output.getvalue(),
-                file_name=f"BidTab_{bt.rfq.rfq_number}_Modern_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-    st.divider()
-    st.caption(f"Generated from session data · Last updated: {bt.last_updated}")
+    # Save to bytes
+    output = BytesIO()
+    wb.save(output)
+    return output.getvalue()
