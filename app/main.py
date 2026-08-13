@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.models import BidTab, VendorQuote, ComplianceStatus, calculate_apples_to_apples
-from app.excel_export import build_classic_excel
+from app.excel_export import build_classic_excel, build_modern_excel
 from data.m001_demo import demo_bid_tab
 
 # ---------------------------------------------------------------------------
@@ -350,75 +350,16 @@ with tab_download:
 
     with col2:
         st.markdown("### Modern Format")
-        st.caption("Multi-sheet with Summary, Pricing Detail, Terms, Technical, Risk Flags")
+        st.caption("Multi-sheet with Summary, Pricing Detail, Commercial Terms, Technical Compliance")
         if st.button("Generate Modern Excel", key="modern"):
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                # Summary
-                summary = []
-                for v in bt.vendors:
-                    summary.append({
-                        "Vendor": v.vendor.name,
-                        "Proposal": v.vendor.proposal_number,
-                        "Apples-to-Apples Total": calculate_apples_to_apples(v),
-                        "Delivery (weeks)": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Needs Review": v.needs_review
-                    })
-                pd.DataFrame(summary).to_excel(writer, sheet_name="Summary", index=False)
-
-                # Full pricing
-                all_prices = []
-                for v in bt.vendors:
-                    for p in v.pricing_lines:
-                        all_prices.append({
-                            "Vendor": v.vendor.name,
-                            "Item": p.item,
-                            "Description": p.description,
-                            "Amount USD": p.amount_usd,
-                            "Optional": p.is_optional,
-                            "Notes": p.notes or ""
-                        })
-                pd.DataFrame(all_prices).to_excel(writer, sheet_name="Pricing Detail", index=False)
-
-                # Terms
-                terms = []
-                for v in bt.vendors:
-                    terms.append({
-                        "Vendor": v.vendor.name,
-                        "Delivery": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Payment Terms": v.commercial.payment_terms,
-                        "Warranty": v.commercial.warranty,
-                        "Cancellation": v.commercial.cancellation_schedule,
-                        "Tariff Disclaimer": v.commercial.tariff_disclaimer,
-                        "Storage": v.commercial.storage,
-                        "Notes": v.commercial.notes or ""
-                    })
-                pd.DataFrame(terms).to_excel(writer, sheet_name="Commercial Terms", index=False)
-
-                # Technical
-                tech_rows = []
-                for v in bt.vendors:
-                    for t in v.technical:
-                        tech_rows.append({
-                            "Vendor": v.vendor.name,
-                            "Category": t.category,
-                            "Parameter": t.parameter,
-                            "Data Sheet Required": t.data_sheet_required,
-                            "Vendor Offer": t.vendor_offer,
-                            "Compliance": t.compliance.value,
-                            "Notes": t.notes or ""
-                        })
-                if tech_rows:
-                    pd.DataFrame(tech_rows).to_excel(writer, sheet_name="Technical Compliance", index=False)
-
+            excel_bytes = build_modern_excel(bt)
             st.download_button(
                 label="⬇️ Download Modern Excel",
-                data=output.getvalue(),
+                data=excel_bytes,
                 file_name=f"BidTab_{bt.rfq.rfq_number}_Modern_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            st.success("Modern Excel ready — professionally formatted multi-sheet workbook.")
 
     st.divider()
     st.caption(f"Generated from session data · Last updated: {bt.last_updated}")
