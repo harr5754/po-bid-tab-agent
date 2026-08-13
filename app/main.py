@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.models import BidTab, VendorQuote, ComplianceStatus, calculate_apples_to_apples
+from app.excel_export import build_classic_excel
 from data.m001_demo import demo_bid_tab
 
 # ---------------------------------------------------------------------------
@@ -336,60 +337,16 @@ with tab_download:
 
     with col1:
         st.markdown("### Classic Format")
-        st.caption("Matches your existing 2-sheet Bid Tab style (Commercial + Technical)")
+        st.caption("Matches the professional 2-sheet Bid Tab layout you already use (Commercial + Technical)")
         if st.button("Generate Classic Excel", key="classic"):
-            # Simple Excel generation
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                # Commercial sheet
-                comm_data = {
-                    "Field": ["Project", "Location", "Owner", "RFQ", "Equipment", "Data Sheet", "Bid Tab Rev"],
-                    "Value": [bt.rfq.project_name, bt.rfq.location, bt.rfq.owner, bt.rfq.rfq_number,
-                              f"{bt.rfq.equipment_tag} — {bt.rfq.equipment_description}",
-                              bt.rfq.data_sheet_ref, bt.rfq.bid_tab_rev]
-                }
-                pd.DataFrame(comm_data).to_excel(writer, sheet_name="Commercial Summary", index=False)
-
-                # Pricing comparison
-                price_rows = []
-                for v in bt.vendors:
-                    total = calculate_apples_to_apples(v)
-                    price_rows.append({
-                        "Vendor": v.vendor.name,
-                        "Proposal": v.vendor.proposal_number,
-                        "Base Vessel": next((p.amount_usd for p in v.pricing_lines if "Base" in p.item), 0),
-                        "Downcomers": next((p.amount_usd for p in v.pricing_lines if "Downcomer" in p.item), 0),
-                        "Ladders": next((p.amount_usd for p in v.pricing_lines if "Ladder" in p.item), 0),
-                        "Apples-to-Apples": total,
-                        "Delivery": v.commercial.delivery_weeks,
-                        "Validity": v.commercial.pricing_validity,
-                        "Payment": v.commercial.payment_terms,
-                        "Warranty": v.commercial.warranty,
-                    })
-                pd.DataFrame(price_rows).to_excel(writer, sheet_name="Pricing & Terms", index=False)
-
-                # Technical
-                tech_rows = []
-                for v in bt.vendors:
-                    for t in v.technical:
-                        tech_rows.append({
-                            "Vendor": v.vendor.name,
-                            "Category": t.category,
-                            "Parameter": t.parameter,
-                            "Data Sheet": t.data_sheet_required,
-                            "Vendor Offer": t.vendor_offer,
-                            "Compliance": t.compliance.value,
-                            "Notes": t.notes or ""
-                        })
-                if tech_rows:
-                    pd.DataFrame(tech_rows).to_excel(writer, sheet_name="Technical Comparison", index=False)
-
+            excel_bytes = build_classic_excel(bt)
             st.download_button(
                 label="⬇️ Download Classic Excel",
-                data=output.getvalue(),
+                data=excel_bytes,
                 file_name=f"BidTab_{bt.rfq.rfq_number}_Classic_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+            st.success("Classic Excel ready — formatted to closely match your existing Bid Tab style.")
 
     with col2:
         st.markdown("### Modern Format")
