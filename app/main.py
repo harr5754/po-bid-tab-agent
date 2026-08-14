@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.models import BidTab, VendorQuote, ComplianceStatus, calculate_apples_to_apples
 from app.excel_export import build_classic_excel, build_modern_excel
+from app.template_export import build_classic_from_template
 from data.m001_demo import demo_bid_tab
 
 # ---------------------------------------------------------------------------
@@ -339,14 +340,25 @@ with tab_download:
         st.markdown("### Classic Format")
         st.caption("Matches the professional 2-sheet Bid Tab layout you already use (Commercial + Technical)")
         if st.button("Generate Classic Excel", key="classic"):
-            excel_bytes = build_classic_excel(bt)
-            st.download_button(
-                label="⬇️ Download Classic Excel",
-                data=excel_bytes,
-                file_name=f"BidTab_{bt.rfq.rfq_number}_Classic_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-            st.success("Classic Excel ready — formatted to closely match your existing Bid Tab style.")
+            try:
+                excel_bytes = build_classic_from_template(bt)
+                st.download_button(
+                    label="⬇️ Download Classic Excel (from your template)",
+                    data=excel_bytes,
+                    file_name=f"BidTab_{bt.rfq.rfq_number}_Classic_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.success("Classic Excel ready — filled from your Bid Tab Template (20% Vendor Data Costs formulas preserved).")
+            except Exception as e:
+                st.error(f"Template export failed: {e}")
+                st.info("Falling back to generated Classic format...")
+                excel_bytes = build_classic_excel(bt)
+                st.download_button(
+                    label="⬇️ Download Classic Excel (fallback)",
+                    data=excel_bytes,
+                    file_name=f"BidTab_{bt.rfq.rfq_number}_Classic_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
     with col2:
         st.markdown("### Modern Format")
