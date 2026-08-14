@@ -210,7 +210,7 @@ def build_classic_from_template(bt: BidTab) -> bytes:
         "EXTERNAL & INTERNAL ATTACHMENTS": list(range(32, 39)),
         "ATTACHMENTS": list(range(32, 39)),
         "NOZZLE SCHEDULE": list(range(40, 55)),
-        "INTERNALS": list(range(56, 58)),
+        "INTERNALS": list(range(56, 60)),
         "HYDROTEST": list(range(10, 20)),  # fold into DESIGN DATA
     }
 
