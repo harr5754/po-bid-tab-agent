@@ -155,6 +155,15 @@ def build_classic_from_template(bt: BidTab) -> bytes:
     # ------------------------------------------------------------------
     # 4. Commercial Terms (rows 31-38)
     # ------------------------------------------------------------------
+    # Header row 30 — use real vendor names + rev (same style as Pricing)
+    for i, col in enumerate(vendor_cols):
+        if i < len(vendors):
+            v = vendors[i]
+            label = f"{v.vendor.name} ({v.vendor.revision or v.vendor.proposal_number})"
+            ws.cell(row=30, column=col, value=label)
+        else:
+            ws.cell(row=30, column=col, value="")
+
     term_rows = [
         (31, "Delivery", lambda v: v.commercial.delivery_weeks),
         (32, "Pricing Validity", lambda v: v.commercial.pricing_validity),
@@ -185,33 +194,54 @@ def build_classic_from_template(bt: BidTab) -> bytes:
         else:
             ws2.cell(row=4, column=col, value="")
 
-    # Fill technical parameters into non-merged data rows.
-    # Category header rows that are merged (must not write into them):
-    merged_header_rows = {5, 9, 20, 31, 39, 55}
+    # Fill technical parameters under the correct category headers.
+    # Template category header rows (merged) and the data rows that follow them:
+    # GENERAL = row 5, data 6-8
+    # DESIGN DATA = row 9, data 10-19
+    # MATERIALS OF CONSTRUCTION = row 20, data 21-30
+    # EXTERNAL & INTERNAL ATTACHMENTS = row 31, data 32-38
+    # NOZZLE SCHEDULE = row 39, data 40-54
+    # INTERNALS = row 55, data 56+
+    category_row_map = {
+        "GENERAL": list(range(6, 9)),
+        "DESIGN DATA": list(range(10, 20)),
+        "MATERIALS OF CONSTRUCTION": list(range(21, 31)),
+        "MATERIALS": list(range(21, 31)),
+        "EXTERNAL & INTERNAL ATTACHMENTS": list(range(32, 39)),
+        "ATTACHMENTS": list(range(32, 39)),
+        "NOZZLE SCHEDULE": list(range(40, 55)),
+        "INTERNALS": list(range(56, 58)),
+        "HYDROTEST": list(range(10, 20)),  # fold into DESIGN DATA
+    }
 
     if vendors:
-        master_params = vendors[0].technical
-        # Available data rows between headers
-        data_rows = [r for r in range(6, 55) if r not in merged_header_rows]
-        for idx, t in enumerate(master_params):
-            if idx >= len(data_rows):
-                break
-            row = data_rows[idx]
-            ws2.cell(row=row, column=1, value=t.parameter)
-            ws2.cell(row=row, column=2, value=t.units or "—")
-            ws2.cell(row=row, column=3, value=t.data_sheet_required)
+        from collections import defaultdict
+        # Group master parameters by category (use first vendor as master order)
+        by_cat = defaultdict(list)
+        for t in vendors[0].technical:
+            by_cat[t.category].append(t)
 
-            for i, v in enumerate(vendors):
-                match = next((x for x in v.technical if x.parameter == t.parameter and x.category == t.category), None)
-                if match:
-                    ws2.cell(row=row, column=4 + i, value=match.vendor_offer)
-                    if i == 0:
-                        ws2.cell(row=row, column=7, value=match.compliance.value)
-                else:
-                    ws2.cell(row=row, column=4 + i, value="—")
+        for cat, params in by_cat.items():
+            rows = category_row_map.get(cat, [])
+            for idx, t in enumerate(params):
+                if idx >= len(rows):
+                    break
+                row = rows[idx]
+                ws2.cell(row=row, column=1, value=t.parameter)
+                ws2.cell(row=row, column=2, value=t.units or "—")
+                ws2.cell(row=row, column=3, value=t.data_sheet_required)
 
-            if t.notes:
-                ws2.cell(row=row, column=8, value=t.notes)
+                for i, v in enumerate(vendors):
+                    match = next((x for x in v.technical if x.parameter == t.parameter and x.category == t.category), None)
+                    if match:
+                        ws2.cell(row=row, column=4 + i, value=match.vendor_offer)
+                        if i == 0:
+                            ws2.cell(row=row, column=7, value=match.compliance.value)
+                    else:
+                        ws2.cell(row=row, column=4 + i, value="—")
+
+                if t.notes:
+                    ws2.cell(row=row, column=8, value=t.notes)
 
     # ------------------------------------------------------------------
     # Save to bytes
